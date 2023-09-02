@@ -33834,11 +33834,11 @@ msgid "Families are not ordered chronological"
 msgstr ""
 
 #: ../gramps/plugins/tool/verify.py:2427
-msgid "Family has events of type Unknown"
+msgid "Family has events with role Unknown"
 msgstr ""
 
 #: ../gramps/plugins/tool/verify.py:2443
-msgid "Person has events of type Unknown"
+msgid "Person has events with role Unknown"
 msgstr ""
 
 #: ../gramps/plugins/tool/verify.py:2470

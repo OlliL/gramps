@@ -36533,12 +36533,12 @@ msgid "Families are not ordered chronological"
 msgstr "Familien nicht chronologisch sortiert"
 
 #: ../gramps/plugins/tool/verify.py:2427
-msgid "Family has events of type Unknown"
-msgstr "Familie hat Ereignisse vom Typ Unbekannt"
+msgid "Family has events with role Unknown"
+msgstr "Familie hat Ereignisse mit Rolle Unbekannt"
 
 #: ../gramps/plugins/tool/verify.py:2443
-msgid "Person has events of type Unknown"
-msgstr "Person hat Ereignisse vom Typ Unbekannt"
+msgid "Person has events with role Unknown"
+msgstr "Person hat Ereignisse mit Rolle Unbekannt"
 
 #: ../gramps/plugins/tool/verify.py:2470
 msgid "Family events not ordered chronological"

@@ -2456,7 +2456,7 @@ class FamilyOrderIncorrect(PersonRule):
 
 
 class FamilyHasEventsOfTypeUnknown(FamilyRule):
-    """test if the family has events of type Unknown"""
+    """test if the family has events with role Unknown"""
 
     ID = 40
     SEVERITY = Rule.ERROR
@@ -2465,11 +2465,11 @@ class FamilyHasEventsOfTypeUnknown(FamilyRule):
         return self.obj.is_events_of_type_unknown()
 
     def get_message(self):
-        return _("Family has events of type Unknown")
+        return _("Family has events with role Unknown")
 
 
 class PersonHasEventsOfTypeUnknown(PersonRule):
-    """test if the Person has events of type Unknown"""
+    """test if the Person has events with role Unknown"""
 
     ID = 41
     SEVERITY = Rule.ERROR
@@ -2478,7 +2478,7 @@ class PersonHasEventsOfTypeUnknown(PersonRule):
         return self.obj.is_events_of_type_unknown()
 
     def get_message(self):
-        return _("Person has events of type Unknown")
+        return _("Person has events with role Unknown")
 
 
 class FamilyHasEventsInWrongOrder(FamilyRule):
