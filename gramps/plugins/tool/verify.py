@@ -20,8 +20,6 @@
 # along with this program; if not, write to the Free Software
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301 USA.
 #
-from netaddr import strategy
-from gramps.gen.lib.family import Family
 
 """
 A plugin to verify the data against user-adjusted tests.
@@ -75,6 +73,7 @@ from gramps.gen.lib import (
     NameType,
     Person,
 )
+from gramps.gen.lib.family import Family
 from gramps.gen.lib.date import Today
 from gramps.gui.editors import EditPerson, EditFamily
 from gramps.gen.utils.db import family_name
@@ -83,7 +82,6 @@ from gramps.gui.managedwindow import ManagedWindow
 from gramps.gen.updatecallback import UpdateCallback
 from gramps.gui.plug import tool
 from gramps.gui.glade import Glade
-from gramps.gen.utils.lru import LRU
 
 # -------------------------------------------------------------------------
 #
@@ -128,7 +126,7 @@ class VerifyFamily:
             event = db.get_event_from_handle(event_ref.ref)
             date_obj = event.get_date_object()
             if date_obj:
-                if (prev_date > date_obj.get_sort_value() > 0):
+                if prev_date > date_obj.get_sort_value() > 0:
                     self.events_in_wrong_order = True
                 prev_date = date_obj.get_sort_value()
 
@@ -212,7 +210,7 @@ class VerifyPerson:
             event = db.get_event_from_handle(event_ref.ref)
             date_obj = event.get_date_object()
             if date_obj:
-                if (prev_date > date_obj.get_sort_value() > 0):
+                if prev_date > date_obj.get_sort_value() > 0:
                     self.events_in_wrong_order = True
                 prev_date = date_obj.get_sort_value()
 
@@ -304,7 +302,7 @@ def find_person(handle):
     """find a person, given a handle"""
     if handle in _person_cache:
         return _person_cache[handle]
-    return VerifyPerson(None, None);
+    return VerifyPerson(None, None)
 
 def find_family(handle):
     """find a family, given a handle"""
