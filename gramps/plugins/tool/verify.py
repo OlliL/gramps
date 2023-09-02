@@ -91,13 +91,13 @@ from gramps.gui.glade import Glade
 WIKI_HELP_PAGE = "%s_-_Tools" % URL_MANUAL_PAGE
 WIKI_HELP_SEC = _("Verify_the_Data", "manual")
 
+
 # -------------------------------------------------------------------------
 #
 # temp storage and related functions
 #
 # -------------------------------------------------------------------------
 class VerifyFamily:
-
     def __init__(self, db, family: Family):
         self.handle = ""
         self.marr_date = 0
@@ -133,8 +133,9 @@ class VerifyFamily:
             if event_ref.get_role() == EventRoleType.UNKNOWN:
                 self.events_of_type_unknown = True
                 continue
-            if (event_ref.get_role() == EventRoleType.FAMILY or
-                event_ref.get_role() == EventRoleType.PRIMARY
+            if (
+                event_ref.get_role() == EventRoleType.FAMILY
+                or event_ref.get_role() == EventRoleType.PRIMARY
             ):
                 etype = event.get_type()
                 date_obj = event.get_date_object()
@@ -172,7 +173,6 @@ class VerifyFamily:
 
 
 class VerifyPerson:
-
     def __init__(self, db, person: Person):
         self.handle = ""
         self.birth_date = [0, 0]
@@ -226,9 +226,8 @@ class VerifyPerson:
                     else:
                         exact_date = date_obj.get_sort_value()
 
-                    if (
-                        etype == EventType.BAPTISM
-                        or (etype == EventType.CHRISTEN and self.bapt_date[1] == 0)
+                    if etype == EventType.BAPTISM or (
+                        etype == EventType.CHRISTEN and self.bapt_date[1] == 0
                     ):
                         self.bapt_date[0] = exact_date
                         self.bapt_date[1] = date_obj.get_sort_value()
@@ -294,9 +293,11 @@ class VerifyPerson:
     def get_gramps_id(self):
         return self.gramps_id
 
+
 _person_cache = {}
 _family_cache = {}
 _today = Today().get_sort_value()
+
 
 def find_person(handle):
     """find a person, given a handle"""
@@ -304,11 +305,13 @@ def find_person(handle):
         return _person_cache[handle]
     return VerifyPerson(None, None)
 
+
 def find_family(handle):
     """find a family, given a handle"""
     if handle in _family_cache:
         return _family_cache[handle]
     return VerifyFamily(None, None)
+
 
 def preload_cache(db):
     for person in db.iter_people():
@@ -319,10 +322,12 @@ def preload_cache(db):
         verify_family = VerifyFamily(db, family)
         _family_cache[family.get_handle()] = verify_family
 
+
 def clear_cache():
     """clear the cache"""
     _person_cache.clear()
     _family_cache.clear()
+
 
 # -------------------------------------------------------------------------
 #
@@ -529,7 +534,6 @@ class Verify(tool.Tool, ManagedWindow, UpdateCallback):
         )
 
         for handle, verify_person in _person_cache.items():
-
             rule_list = [
                 BirthAfterBapt(verify_person),
                 DeathBeforeBapt(verify_person),
@@ -554,7 +558,7 @@ class Verify(tool.Tool, ManagedWindow, UpdateCallback):
                 BuryTooLate(verify_person),
                 FamilyOrderIncorrect(verify_person, estimate_age),
                 PersonHasEventsOfTypeUnknown(verify_person),
-                PersonHasEventsInWrongOrder(verify_person)
+                PersonHasEventsInWrongOrder(verify_person),
             ]
 
             for rule in rule_list:
@@ -566,7 +570,6 @@ class Verify(tool.Tool, ManagedWindow, UpdateCallback):
 
         # Family-based rules
         for handle, verify_family in _family_cache.items():
-
             rule_list = [
                 SameSexFamily(verify_family),
                 FemaleHusband(verify_family),
@@ -586,7 +589,7 @@ class Verify(tool.Tool, ManagedWindow, UpdateCallback):
                 MarriedRelation(verify_family),
                 ChildrenOrderIncorrect(verify_family, estimate_age),
                 FamilyHasEventsOfTypeUnknown(verify_family),
-                FamilyHasEventsInWrongOrder(verify_family)
+                FamilyHasEventsInWrongOrder(verify_family),
             ]
 
             for rule in rule_list:
@@ -597,6 +600,7 @@ class Verify(tool.Tool, ManagedWindow, UpdateCallback):
                 self.update()
 
         clear_cache()
+
 
 # -------------------------------------------------------------------------
 #
@@ -2260,6 +2264,7 @@ class DeathEqualsMarriage(PersonRule):
         """return the rule's error message"""
         return _("Death equals marriage")
 
+
 class BaptTooLate(PersonRule):
     """test if a person's baptism date is too late considering family tradition"""
 
@@ -2321,6 +2326,7 @@ class BaptTooLate(PersonRule):
         """return the rule's error message"""
         return _("Baptism too late according to family tradition")
 
+
 class BuryTooLate(PersonRule):
     """test if a person's burial date is too late"""
 
@@ -2345,6 +2351,7 @@ class BuryTooLate(PersonRule):
     def get_message(self):
         """return the rule's error message"""
         return _("Burial too late")
+
 
 class ChildrenOrderIncorrect(FamilyRule):
     """test if children are ordered incorrectly within a family"""
@@ -2381,6 +2388,7 @@ class ChildrenOrderIncorrect(FamilyRule):
 
     def get_message(self):
         return _("Children are not ordered chronological")
+
 
 class FamilyOrderIncorrect(PersonRule):
     """test if Families of a person ordered incorrectly"""
@@ -2428,9 +2436,13 @@ class FamilyOrderIncorrect(PersonRule):
                         if int(childref.get_mother_relation()) == ChildRefType.BIRTH:
                             child = find_person(childref.ref)
                             birth_date = child.get_birth_date(self.est)
-                            birth_ok = birth_date > 0 if birth_date is not None else False
-                            if ( birth_ok
-                                 and birth_date < compare_date or compare_date == 0
+                            birth_ok = (
+                                birth_date > 0 if birth_date is not None else False
+                            )
+                            if (
+                                birth_ok
+                                and birth_date < compare_date
+                                or compare_date == 0
                             ):
                                 compare_date = birth_date
             if compare_date != 0 and compare_date < prev_compare_date:
@@ -2440,6 +2452,7 @@ class FamilyOrderIncorrect(PersonRule):
 
     def get_message(self):
         return _("Families are not ordered chronological")
+
 
 class FamilyHasEventsOfTypeUnknown(FamilyRule):
     """test if the family has events of type Unknown"""
@@ -2453,6 +2466,7 @@ class FamilyHasEventsOfTypeUnknown(FamilyRule):
     def get_message(self):
         return _("Family has events of type Unknown")
 
+
 class PersonHasEventsOfTypeUnknown(PersonRule):
     """test if the Person has events of type Unknown"""
 
@@ -2465,6 +2479,7 @@ class PersonHasEventsOfTypeUnknown(PersonRule):
     def get_message(self):
         return _("Person has events of type Unknown")
 
+
 class FamilyHasEventsInWrongOrder(FamilyRule):
     """test if the family has events in wrong order"""
 
@@ -2476,6 +2491,7 @@ class FamilyHasEventsInWrongOrder(FamilyRule):
 
     def get_message(self):
         return _("Family events not ordered chronological")
+
 
 class PersonHasEventsInWrongOrder(PersonRule):
     """test if the person has events in wrong order"""
