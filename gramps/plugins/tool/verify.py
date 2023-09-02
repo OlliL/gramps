@@ -114,6 +114,7 @@ class VerifyFamily:
         if family is None:
             return
 
+        self.handle = family.get_handle()
         self.name = family_name(family, db)
         self.mother_handle = family.get_mother_handle()
         self.father_handle = family.get_father_handle()
