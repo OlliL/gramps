@@ -77,6 +77,7 @@ from gramps.gen.lib.family import Family
 from gramps.gen.lib.date import Today
 from gramps.gui.editors import EditPerson, EditFamily
 from gramps.gen.utils.db import family_name
+from gramps.gen.utils.lru import LRU
 from gramps.gui.display import display_help
 from gramps.gui.managedwindow import ManagedWindow
 from gramps.gen.updatecallback import UpdateCallback
@@ -126,7 +127,7 @@ class VerifyFamily:
         for event_ref in family.get_event_ref_list():
             event = db.get_event_from_handle(event_ref.ref)
             date_obj = event.get_date_object()
-            if date_obj:
+            if date_obj and date_obj.get_day() != 0 and date_obj.get_month() != 0:
                 if prev_date > date_obj.get_sort_value() > 0:
                     self.events_in_wrong_order = True
                 prev_date = date_obj.get_sort_value()
@@ -172,6 +173,9 @@ class VerifyFamily:
     def get_relationship(self):
         return self.relationship
 
+    def get_handle(self):
+        return self.handle
+
 
 class VerifyPerson:
     def __init__(self, db, person: Person):
@@ -210,7 +214,7 @@ class VerifyPerson:
         for event_ref in person.get_event_ref_list():
             event = db.get_event_from_handle(event_ref.ref)
             date_obj = event.get_date_object()
-            if date_obj:
+            if date_obj and date_obj.get_day() != 0 and date_obj.get_month() != 0:
                 if prev_date > date_obj.get_sort_value() > 0:
                     self.events_in_wrong_order = True
                 prev_date = date_obj.get_sort_value()
@@ -294,31 +298,44 @@ class VerifyPerson:
     def get_gramps_id(self):
         return self.gramps_id
 
+    def get_handle(self):
+        return self.handle
 
-_person_cache = {}
-_family_cache = {}
+
+_person_cache_size = 20000
+_family_cache_size = 10000
+_person_cache = LRU(_person_cache_size + 1)
+_family_cache = LRU(_family_cache_size + 1)
 _today = Today().get_sort_value()
 
 
-def find_person(handle):
+def find_person(db, handle):
     """find a person, given a handle"""
-    if handle in _person_cache:
-        return _person_cache[handle]
-    return VerifyPerson(None, None)
+    if handle not in _person_cache:
+        person = db.get_person_from_handle(handle)
+        verify_person = VerifyPerson(db, person)
+        _person_cache[handle] = verify_person
+    return _person_cache[handle]
 
 
-def find_family(handle):
+def find_family(db, handle):
     """find a family, given a handle"""
-    if handle in _family_cache:
-        return _family_cache[handle]
-    return VerifyFamily(None, None)
+    if handle not in _family_cache:
+        family = db.get_family_from_handle(handle)
+        verify_family = VerifyFamily(db, family)
+        _family_cache[handle] = verify_family
+    return _family_cache[handle]
 
 
-def preload_cache(db):
+def preload_person_cache(db):
+    """puts all existing people in the cache"""
     for person in db.iter_people():
         verify_person = VerifyPerson(db, person)
         _person_cache[person.get_handle()] = verify_person
 
+
+def preload_family_cache(db):
+    """puts all existing families in the cache"""
     for family in db.iter_families():
         verify_family = VerifyFamily(db, family)
         _family_cache[family.get_handle()] = verify_family
@@ -344,42 +361,42 @@ def get_age_at_death(person, estimate):
     return 0
 
 
-def get_father(family):
+def get_father(db, family):
     """get a family's father"""
     if not family:
         return VerifyPerson(None, None)
     father_handle = family.get_father_handle()
     if father_handle:
-        return find_person(father_handle)
+        return find_person(db, father_handle)
     return VerifyPerson(None, None)
 
 
-def get_mother(family):
+def get_mother(db, family):
     """get a family's mother"""
     if not family:
         return VerifyPerson(None, None)
     mother_handle = family.get_mother_handle()
     if mother_handle:
-        return find_person(mother_handle)
+        return find_person(db, mother_handle)
     return VerifyPerson(None, None)
 
 
-def get_child_birth_dates(family, estimate):
+def get_child_birth_dates(db, family, estimate):
     """get a family's children's birth dates"""
     dates = []
     for child_ref in family.get_child_ref_list():
-        child = find_person(child_ref.ref)
+        child = find_person(db, child_ref.ref)
         child_birth_date = child.get_birth_date(estimate)
         if child_birth_date > 0:
             dates.append(child_birth_date)
     return dates
 
 
-def get_n_children(person):
+def get_n_children(db, person):
     """get the number of a family's children"""
     number = 0
     for family_handle in person.get_family_handle_list():
-        family = find_family(family_handle)
+        family = find_family(db, family_handle)
         if family:
             number += len(family.get_child_ref_list())
     return number
@@ -517,10 +534,104 @@ class Verify(tool.Tool, ManagedWindow, UpdateCallback):
         # Save options
         self.options.handler.save_options()
 
+    def process_family(
+        self,
+        cli,
+        verify_family,
+        hwdif,
+        yngmar,
+        oldmar,
+        oldmom,
+        yngmom,
+        cbspan,
+        cspace,
+        estimate_age,
+    ):
+        """runs all family rules on the given family"""
+        rule_list = [
+            SameSexFamily(self.db, verify_family),
+            FemaleHusband(self.db, verify_family),
+            MaleWife(self.db, verify_family),
+            SameSurnameFamily(self.db, verify_family),
+            LargeAgeGapFamily(self.db, verify_family, hwdif, estimate_age),
+            MarriageBeforeBirth(self.db, verify_family, estimate_age),
+            MarriageAfterDeath(self.db, verify_family, estimate_age),
+            EarlyMarriage(self.db, verify_family, yngmar, estimate_age),
+            LateMarriage(self.db, verify_family, oldmar, estimate_age),
+            OldParent(self.db, verify_family, oldmom, olddad, estimate_age),
+            YoungParent(self.db, verify_family, yngmom, yngdad, estimate_age),
+            UnbornParent(self.db, verify_family, estimate_age),
+            DeadParent(self.db, verify_family, estimate_age),
+            LargeChildrenSpan(self.db, verify_family, cbspan, estimate_age),
+            LargeChildrenAgeDiff(self.db, verify_family, cspace, estimate_age),
+            MarriedRelation(self.db, verify_family),
+            ChildrenOrderIncorrect(self.db, verify_family, estimate_age),
+            FamilyHasEventsOfTypeUnknown(self.db, verify_family),
+            FamilyHasEventsInWrongOrder(self.db, verify_family),
+        ]
+
+        for rule in rule_list:
+            if rule.broken():
+                self.add_results(rule.report_itself())
+
+        if not cli:
+            self.update()
+
+    def process_person(
+        self,
+        cli,
+        verify_person,
+        oldage,
+        wedder,
+        oldunm,
+        mxchilddad,
+        mxchildmom,
+        invdate,
+        estimate_age,
+    ):
+        """runs all person rules on the given person"""
+        rule_list = [
+            BirthAfterBapt(self.db, verify_person),
+            DeathBeforeBapt(self.db, verify_person),
+            BirthAfterBury(self.db, verify_person),
+            DeathAfterBury(self.db, verify_person),
+            BirthAfterDeath(self.db, verify_person),
+            BaptAfterBury(self.db, verify_person),
+            OldAge(self.db, verify_person, oldage, estimate_age),
+            OldAgeButNoDeath(self.db, verify_person, oldage, estimate_age),
+            UnknownGender(self.db, verify_person),
+            MultipleParents(self.db, verify_person),
+            MarriedOften(self.db, verify_person, wedder),
+            OldUnmarried(self.db, verify_person, oldunm, estimate_age),
+            TooManyChildren(self.db, verify_person, mxchilddad, mxchildmom),
+            Disconnected(self.db, verify_person),
+            InvalidBirthDate(self.db, verify_person, invdate),
+            InvalidDeathDate(self.db, verify_person, invdate),
+            BirthEqualsDeath(self.db, verify_person),
+            BirthEqualsMarriage(self.db, verify_person),
+            DeathEqualsMarriage(self.db, verify_person),
+            BaptTooLate(self.db, verify_person),
+            BuryTooLate(self.db, verify_person),
+            FamilyOrderIncorrect(self.db, verify_person, estimate_age),
+            PersonHasEventsOfTypeUnknown(self.db, verify_person),
+            PersonHasEventsInWrongOrder(self.db, verify_person),
+        ]
+        for rule in rule_list:
+            if rule.broken():
+                self.add_results(rule.report_itself())
+
+        if not cli:
+            self.update()
+
     def run_the_tool(self, cli=False):
         """run the tool"""
 
-        preload_cache(self.db)
+        n_people = self.db.get_number_of_people()
+        n_families = self.db.get_number_of_families()
+        if n_people <= _person_cache_size:
+            preload_person_cache(self.db)
+        if n_families <= _family_cache_size:
+            preload_family_cache(self.db)
 
         for option, value in self.options.handler.options_dict.items():
             exec("%s = %s" % (option, value), globals())
@@ -530,75 +641,60 @@ class Verify(tool.Tool, ManagedWindow, UpdateCallback):
         if self.v_r:
             self.v_r.real_model.clear()
 
-        self.set_total(
-            self.db.get_number_of_people() + self.db.get_number_of_families()
-        )
+        self.set_total(n_people + n_families)
 
-        for handle, verify_person in _person_cache.items():
-            rule_list = [
-                BirthAfterBapt(verify_person),
-                DeathBeforeBapt(verify_person),
-                BirthAfterBury(verify_person),
-                DeathAfterBury(verify_person),
-                BirthAfterDeath(verify_person),
-                BaptAfterBury(verify_person),
-                OldAge(verify_person, oldage, estimate_age),
-                OldAgeButNoDeath(verify_person, oldage, estimate_age),
-                UnknownGender(verify_person),
-                MultipleParents(verify_person),
-                MarriedOften(verify_person, wedder),
-                OldUnmarried(verify_person, oldunm, estimate_age),
-                TooManyChildren(verify_person, mxchilddad, mxchildmom),
-                Disconnected(verify_person),
-                InvalidBirthDate(verify_person, invdate),
-                InvalidDeathDate(verify_person, invdate),
-                BirthEqualsDeath(verify_person),
-                BirthEqualsMarriage(verify_person),
-                DeathEqualsMarriage(verify_person),
-                BaptTooLate(verify_person),
-                BuryTooLate(verify_person),
-                FamilyOrderIncorrect(verify_person, estimate_age),
-                PersonHasEventsOfTypeUnknown(verify_person),
-                PersonHasEventsInWrongOrder(verify_person),
-            ]
+        family_handles = set(self.db.get_family_handles())
 
-            for rule in rule_list:
-                if rule.broken():
-                    self.add_results(rule.report_itself())
+        #        for person_handle in self.db.iter_person_handles():
+        #            verify_person = find_person(self.db, person_handle)
+        for person in self.db.iter_people():
+            verify_person = VerifyPerson(self.db, person)
+            _person_cache[verify_person.get_handle()] = verify_person
+            for family_handle in verify_person.get_family_handle_list():
+                if family_handle in family_handles:
+                    verify_family = find_family(self.db, family_handle)
+                    self.process_family(
+                        cli,
+                        verify_family,
+                        hwdif,
+                        yngmar,
+                        oldmar,
+                        oldmom,
+                        yngmom,
+                        cbspan,
+                        cspace,
+                        estimate_age,
+                    )
+                    family_handles.remove(family_handle)
 
-            if not cli:
-                self.update()
+            self.process_person(
+                cli,
+                verify_person,
+                oldage,
+                wedder,
+                oldunm,
+                mxchilddad,
+                mxchildmom,
+                invdate,
+                estimate_age,
+            )
 
-        # Family-based rules
-        for handle, verify_family in _family_cache.items():
-            rule_list = [
-                SameSexFamily(verify_family),
-                FemaleHusband(verify_family),
-                MaleWife(verify_family),
-                SameSurnameFamily(verify_family),
-                LargeAgeGapFamily(verify_family, hwdif, estimate_age),
-                MarriageBeforeBirth(verify_family, estimate_age),
-                MarriageAfterDeath(verify_family, estimate_age),
-                EarlyMarriage(verify_family, yngmar, estimate_age),
-                LateMarriage(verify_family, oldmar, estimate_age),
-                OldParent(verify_family, oldmom, olddad, estimate_age),
-                YoungParent(verify_family, yngmom, yngdad, estimate_age),
-                UnbornParent(verify_family, estimate_age),
-                DeadParent(verify_family, estimate_age),
-                LargeChildrenSpan(verify_family, cbspan, estimate_age),
-                LargeChildrenAgeDiff(verify_family, cspace, estimate_age),
-                MarriedRelation(verify_family),
-                ChildrenOrderIncorrect(verify_family, estimate_age),
-                FamilyHasEventsOfTypeUnknown(verify_family),
-                FamilyHasEventsInWrongOrder(verify_family),
-            ]
+        # Family-based rules - for any left over families (families without any spouses)
+        for family_handle in family_handles:
+            verify_family = find_family(self.db, family_handle)
 
-            for rule in rule_list:
-                if rule.broken():
-                    self.add_results(rule.report_itself())
-
-            if not cli:
-                self.update()
+            self.process_family(
+                cli,
+                verify_family,
+                hwdif,
+                yngmar,
+                oldmar,
+                oldmom,
+                yngmom,
+                cbspan,
+                cspace,
+                estimate_age,
+            )
 
         clear_cache()
 
@@ -1183,8 +1279,9 @@ class Rule:
     TYPE_FAMILY = "Family"
     TYPE_GROUP = "Group"
 
-    def __init__(self, obj):
+    def __init__(self, db, obj):
         """initialize the rule"""
+        self.db = db
         self.obj = obj
 
     def broken(self):
@@ -1203,7 +1300,7 @@ class Rule:
 
     def get_handle(self):
         """return the object's handle"""
-        return self.obj.handle
+        return self.obj.get_handle()
 
     def get_id(self):
         """return the object's gramps_id"""
@@ -1371,9 +1468,9 @@ class OldAge(PersonRule):
     ID = 7
     SEVERITY = Rule.WARNING
 
-    def __init__(self, person, old_age, est):
+    def __init__(self, db, person, old_age, est):
         """initialize the rule"""
-        PersonRule.__init__(self, person)
+        PersonRule.__init__(self, db, person)
         self.old_age = old_age
         self.est = est
 
@@ -1428,9 +1525,9 @@ class MarriedOften(PersonRule):
     ID = 10
     SEVERITY = Rule.WARNING
 
-    def __init__(self, person, wedder):
+    def __init__(self, db, person, wedder):
         """initialize the rule"""
-        PersonRule.__init__(self, person)
+        PersonRule.__init__(self, db, person)
         self.wedder = wedder
 
     def _get_params(self):
@@ -1453,9 +1550,9 @@ class OldUnmarried(PersonRule):
     ID = 11
     SEVERITY = Rule.WARNING
 
-    def __init__(self, person, old_unm, est):
+    def __init__(self, db, person, old_unm, est):
         """initialize the rule"""
-        PersonRule.__init__(self, person)
+        PersonRule.__init__(self, db, person)
         self.old_unm = old_unm
         self.est = est
 
@@ -1480,9 +1577,9 @@ class TooManyChildren(PersonRule):
     ID = 12
     SEVERITY = Rule.WARNING
 
-    def __init__(self, obj, mx_child_dad, mx_child_mom):
+    def __init__(self, db, obj, mx_child_dad, mx_child_mom):
         """initialize the rule"""
-        PersonRule.__init__(self, obj)
+        PersonRule.__init__(self, db, obj)
         self.mx_child_dad = mx_child_dad
         self.mx_child_mom = mx_child_mom
 
@@ -1492,7 +1589,7 @@ class TooManyChildren(PersonRule):
 
     def broken(self):
         """return boolean indicating whether this rule is violated"""
-        n_child = get_n_children(self.obj)
+        n_child = get_n_children(self.db, self.obj)
 
         if self.obj.get_gender == Person.MALE and n_child > self.mx_child_dad:
             return True
@@ -1515,8 +1612,8 @@ class SameSexFamily(FamilyRule):
 
     def broken(self):
         """return boolean indicating whether this rule is violated"""
-        mother = get_mother(self.obj)
-        father = get_father(self.obj)
+        mother = get_mother(self.db, self.obj)
+        father = get_father(self.db, self.obj)
         same_sex = mother and father and (mother.get_gender() == father.get_gender())
         unknown_sex = mother and (mother.get_gender() == Person.UNKNOWN)
         return same_sex and not unknown_sex
@@ -1534,7 +1631,7 @@ class FemaleHusband(FamilyRule):
 
     def broken(self):
         """return boolean indicating whether this rule is violated"""
-        father = get_father(self.obj)
+        father = get_father(self.db, self.obj)
         return father and (father.get_gender() == Person.FEMALE)
 
     def get_message(self):
@@ -1550,7 +1647,7 @@ class MaleWife(FamilyRule):
 
     def broken(self):
         """return boolean indicating whether this rule is violated"""
-        mother = get_mother(self.obj)
+        mother = get_mother(self.db, self.obj)
         return mother and (mother.get_gender() == Person.MALE)
 
     def get_message(self):
@@ -1566,8 +1663,8 @@ class SameSurnameFamily(FamilyRule):
 
     def broken(self):
         """return boolean indicating whether this rule is violated"""
-        mother = get_mother(self.obj)
-        father = get_father(self.obj)
+        mother = get_mother(self.db, self.obj)
+        father = get_father(self.db, self.obj)
         _broken = False
 
         # Make sure both mother and father exist.
@@ -1598,9 +1695,9 @@ class LargeAgeGapFamily(FamilyRule):
     ID = 17
     SEVERITY = Rule.WARNING
 
-    def __init__(self, obj, hw_diff, est):
+    def __init__(self, db, obj, hw_diff, est):
         """initialize the rule"""
-        FamilyRule.__init__(self, obj)
+        FamilyRule.__init__(self, db, obj)
         self.hw_diff = hw_diff
         self.est = est
 
@@ -1610,8 +1707,8 @@ class LargeAgeGapFamily(FamilyRule):
 
     def broken(self):
         """return boolean indicating whether this rule is violated"""
-        mother = get_mother(self.obj)
-        father = get_father(self.obj)
+        mother = get_mother(self.db, self.obj)
+        father = get_father(self.db, self.obj)
         mother_birth_date = mother.get_birth_date(self.est)
         father_birth_date = father.get_birth_date(self.est)
         mother_birth_date_ok = mother_birth_date > 0
@@ -1630,9 +1727,9 @@ class MarriageBeforeBirth(FamilyRule):
     ID = 18
     SEVERITY = Rule.ERROR
 
-    def __init__(self, obj, est):
+    def __init__(self, db, obj, est):
         """initialize the rule"""
-        FamilyRule.__init__(self, obj)
+        FamilyRule.__init__(self, db, obj)
         self.est = est
 
     def _get_params(self):
@@ -1644,8 +1741,8 @@ class MarriageBeforeBirth(FamilyRule):
         marr_date = self.obj.get_marriage_date()
         marr_date_ok = marr_date > 0
 
-        mother = get_mother(self.obj)
-        father = get_father(self.obj)
+        mother = get_mother(self.db, self.obj)
+        father = get_father(self.db, self.obj)
         mother_birth_date = mother.get_birth_date(self.est)
         father_birth_date = father.get_birth_date(self.est)
         mother_birth_date_ok = mother_birth_date > 0
@@ -1671,9 +1768,9 @@ class MarriageAfterDeath(FamilyRule):
     ID = 19
     SEVERITY = Rule.ERROR
 
-    def __init__(self, obj, est):
+    def __init__(self, db, obj, est):
         """initialize the rule"""
-        FamilyRule.__init__(self, obj)
+        FamilyRule.__init__(self, db, obj)
         self.est = est
 
     def _get_params(self):
@@ -1685,8 +1782,8 @@ class MarriageAfterDeath(FamilyRule):
         marr_date = self.obj.get_marriage_date()
         marr_date_ok = marr_date > 0
 
-        mother = get_mother(self.obj)
-        father = get_father(self.obj)
+        mother = get_mother(self.db, self.obj)
+        father = get_father(self.db, self.obj)
         mother_death_date = mother.get_death_date(self.est)
         father_death_date = father.get_death_date(self.est)
         mother_death_date_ok = mother_death_date > 0
@@ -1712,9 +1809,9 @@ class EarlyMarriage(FamilyRule):
     ID = 20
     SEVERITY = Rule.WARNING
 
-    def __init__(self, obj, yng_mar, est):
+    def __init__(self, db, obj, yng_mar, est):
         """initialize the rule"""
-        FamilyRule.__init__(self, obj)
+        FamilyRule.__init__(self, db, obj)
         self.yng_mar = yng_mar
         self.est = est
 
@@ -1730,8 +1827,8 @@ class EarlyMarriage(FamilyRule):
         marr_date = self.obj.get_marriage_date()
         marr_date_ok = marr_date > 0
 
-        mother = get_mother(self.obj)
-        father = get_father(self.obj)
+        mother = get_mother(self.db, self.obj)
+        father = get_father(self.db, self.obj)
         mother_birth_date = mother.get_birth_date(self.est)
         father_birth_date = father.get_birth_date(self.est)
         mother_birth_date_ok = mother_birth_date > 0
@@ -1763,9 +1860,9 @@ class LateMarriage(FamilyRule):
     ID = 21
     SEVERITY = Rule.WARNING
 
-    def __init__(self, obj, old_mar, est):
+    def __init__(self, db, obj, old_mar, est):
         """initialize the rule"""
-        FamilyRule.__init__(self, obj)
+        FamilyRule.__init__(self, db, obj)
         self.old_mar = old_mar
         self.est = est
 
@@ -1778,8 +1875,8 @@ class LateMarriage(FamilyRule):
         marr_date = self.obj.get_marriage_date()
         marr_date_ok = marr_date > 0
 
-        mother = get_mother(self.obj)
-        father = get_father(self.obj)
+        mother = get_mother(self.db, self.obj)
+        father = get_father(self.db, self.obj)
         mother_birth_date = mother.get_birth_date(self.est)
         father_birth_date = father.get_birth_date(self.est)
         mother_birth_date_ok = mother_birth_date > 0
@@ -1809,9 +1906,9 @@ class OldParent(FamilyRule):
     ID = 22
     SEVERITY = Rule.WARNING
 
-    def __init__(self, obj, old_mom, old_dad, est):
+    def __init__(self, db, obj, old_mom, old_dad, est):
         """initialize the rule"""
-        FamilyRule.__init__(self, obj)
+        FamilyRule.__init__(self, db, obj)
         self.old_mom = old_mom
         self.old_dad = old_dad
         self.est = est
@@ -1822,15 +1919,15 @@ class OldParent(FamilyRule):
 
     def broken(self):
         """return boolean indicating whether this rule is violated"""
-        mother = get_mother(self.obj)
-        father = get_father(self.obj)
+        mother = get_mother(self.db, self.obj)
+        father = get_father(self.db, self.obj)
         mother_birth_date = mother.get_birth_date(self.est)
         father_birth_date = father.get_birth_date(self.est)
         mother_birth_date_ok = mother_birth_date > 0
         father_birth_date_ok = father_birth_date > 0
 
         for child_ref in self.obj.get_child_ref_list():
-            child = find_person(child_ref.ref)
+            child = find_person(self.db, child_ref.ref)
             child_birth_date = child.get_birth_date(self.est)
             child_birth_date_ok = child_birth_date > 0
             if not child_birth_date_ok:
@@ -1865,9 +1962,9 @@ class YoungParent(FamilyRule):
     ID = 23
     SEVERITY = Rule.WARNING
 
-    def __init__(self, obj, yng_mom, yng_dad, est):
+    def __init__(self, db, obj, yng_mom, yng_dad, est):
         """initialize the rule"""
-        FamilyRule.__init__(self, obj)
+        FamilyRule.__init__(self, db, obj)
         self.yng_dad = yng_dad
         self.yng_mom = yng_mom
         self.est = est
@@ -1878,15 +1975,15 @@ class YoungParent(FamilyRule):
 
     def broken(self):
         """return boolean indicating whether this rule is violated"""
-        mother = get_mother(self.obj)
-        father = get_father(self.obj)
+        mother = get_mother(self.db, self.obj)
+        father = get_father(self.db, self.obj)
         mother_birth_date = mother.get_birth_date(self.est)
         father_birth_date = father.get_birth_date(self.est)
         mother_birth_date_ok = mother_birth_date > 0
         father_birth_date_ok = father_birth_date > 0
 
         for child_ref in self.obj.get_child_ref_list():
-            child = find_person(child_ref.ref)
+            child = find_person(self.db, child_ref.ref)
             child_birth_date = child.get_birth_date(self.est)
             child_birth_date_ok = child_birth_date > 0
             if not child_birth_date_ok:
@@ -1921,9 +2018,9 @@ class UnbornParent(FamilyRule):
     ID = 24
     SEVERITY = Rule.ERROR
 
-    def __init__(self, obj, est):
+    def __init__(self, db, obj, est):
         """initialize the rule"""
-        FamilyRule.__init__(self, obj)
+        FamilyRule.__init__(self, db, obj)
         self.est = est
 
     def _get_params(self):
@@ -1932,15 +2029,15 @@ class UnbornParent(FamilyRule):
 
     def broken(self):
         """return boolean indicating whether this rule is violated"""
-        mother = get_mother(self.obj)
-        father = get_father(self.obj)
+        mother = get_mother(self.db, self.obj)
+        father = get_father(self.db, self.obj)
         mother_birth_date = mother.get_birth_date(self.est)
         father_birth_date = father.get_birth_date(self.est)
         mother_birth_date_ok = mother_birth_date > 0
         father_birth_date_ok = father_birth_date > 0
 
         for child_ref in self.obj.get_child_ref_list():
-            child = find_person(child_ref.ref)
+            child = find_person(self.db, child_ref.ref)
             child_birth_date = child.get_birth_date(self.est)
             child_birth_date_ok = child_birth_date > 0
             if not child_birth_date_ok:
@@ -1958,6 +2055,7 @@ class UnbornParent(FamilyRule):
             if mother_broken:
                 self.get_message = self.mother_message
                 return True
+        return False
 
     def father_message(self):
         """return the rule's error message"""
@@ -1974,9 +2072,9 @@ class DeadParent(FamilyRule):
     ID = 25
     SEVERITY = Rule.ERROR
 
-    def __init__(self, obj, est):
+    def __init__(self, db, obj, est):
         """initialize the rule"""
-        FamilyRule.__init__(self, obj)
+        FamilyRule.__init__(self, db, obj)
         self.est = est
 
     def _get_params(self):
@@ -1985,15 +2083,15 @@ class DeadParent(FamilyRule):
 
     def broken(self):
         """return boolean indicating whether this rule is violated"""
-        mother = get_mother(self.obj)
-        father = get_father(self.obj)
+        mother = get_mother(self.db, self.obj)
+        father = get_father(self.db, self.obj)
         mother_death_date = mother.get_death_date(self.est)
         father_death_date = father.get_death_date(self.est)
         mother_death_date_ok = mother_death_date > 0
         father_death_date_ok = father_death_date > 0
 
         for child_ref in self.obj.get_child_ref_list():
-            child = find_person(child_ref.ref)
+            child = find_person(self.db, child_ref.ref)
             child_birth_date = child.get_birth_date(self.est)
             child_birth_date_ok = child_birth_date > 0
             if not child_birth_date_ok:
@@ -2019,6 +2117,7 @@ class DeadParent(FamilyRule):
             if mother_broken:
                 self.get_message = self.mother_message
                 return True
+        return False
 
     def father_message(self):
         """return the rule's error message"""
@@ -2035,9 +2134,9 @@ class LargeChildrenSpan(FamilyRule):
     ID = 26
     SEVERITY = Rule.WARNING
 
-    def __init__(self, obj, cb_span, est):
+    def __init__(self, db, obj, cb_span, est):
         """initialize the rule"""
-        FamilyRule.__init__(self, obj)
+        FamilyRule.__init__(self, db, obj)
         self.cbs = cb_span
         self.est = est
 
@@ -2047,7 +2146,7 @@ class LargeChildrenSpan(FamilyRule):
 
     def broken(self):
         """return boolean indicating whether this rule is violated"""
-        child_birh_dates = get_child_birth_dates(self.obj, self.est)
+        child_birh_dates = get_child_birth_dates(self.db, self.obj, self.est)
         child_birh_dates.sort()
 
         return child_birh_dates and (
@@ -2065,9 +2164,9 @@ class LargeChildrenAgeDiff(FamilyRule):
     ID = 27
     SEVERITY = Rule.WARNING
 
-    def __init__(self, obj, c_space, est):
+    def __init__(self, db, obj, c_space, est):
         """initialize the rule"""
-        FamilyRule.__init__(self, obj)
+        FamilyRule.__init__(self, db, obj)
         self.c_space = c_space
         self.est = est
 
@@ -2077,7 +2176,7 @@ class LargeChildrenAgeDiff(FamilyRule):
 
     def broken(self):
         """return boolean indicating whether this rule is violated"""
-        child_birh_dates = get_child_birth_dates(self.obj, self.est)
+        child_birh_dates = get_child_birth_dates(self.db, self.obj, self.est)
         child_birh_dates_diff = [
             child_birh_dates[i + 1] - child_birh_dates[i]
             for i in range(len(child_birh_dates) - 1)
@@ -2115,9 +2214,9 @@ class InvalidBirthDate(PersonRule):
     ID = 29
     SEVERITY = Rule.ERROR
 
-    def __init__(self, person, invdate):
+    def __init__(self, db, person, invdate):
         """initialize the rule"""
-        PersonRule.__init__(self, person)
+        PersonRule.__init__(self, db, person)
         self._invdate = invdate
 
     def broken(self):
@@ -2138,9 +2237,9 @@ class InvalidDeathDate(PersonRule):
     ID = 30
     SEVERITY = Rule.ERROR
 
-    def __init__(self, person, invdate):
+    def __init__(self, db, person, invdate):
         """initialize the rule"""
-        PersonRule.__init__(self, person)
+        PersonRule.__init__(self, db, person)
         self._invdate = invdate
 
     def broken(self):
@@ -2168,6 +2267,7 @@ class MarriedRelation(FamilyRule):
         married = self.obj.get_relationship() == FamilyRelType.MARRIED
         if not married and marr_date_ok:
             return self.get_message
+        return False
 
     def get_message(self):
         """return the rule's error message"""
@@ -2180,9 +2280,9 @@ class OldAgeButNoDeath(PersonRule):
     ID = 32
     SEVERITY = Rule.WARNING
 
-    def __init__(self, person, old_age, est):
+    def __init__(self, db, person, old_age, est):
         """initialize the rule"""
-        PersonRule.__init__(self, person)
+        PersonRule.__init__(self, db, person)
         self.old_age = old_age
         self.est = est
 
@@ -2235,7 +2335,7 @@ class BirthEqualsMarriage(PersonRule):
         birth_date = self.obj.get_birth_date()
         birth_ok = birth_date > 0 if birth_date is not None else False
         for fhandle in self.obj.get_family_handle_list():
-            family = find_family(fhandle)
+            family = find_family(self.db, fhandle)
             marr_date = family.get_marriage_date()
             marr_ok = marr_date > 0 if marr_date is not None else False
             return marr_ok and birth_ok and birth_date == marr_date
@@ -2256,7 +2356,7 @@ class DeathEqualsMarriage(PersonRule):
         death_date = self.obj.get_death_date()
         death_ok = death_date > 0 if death_date is not None else False
         for fhandle in self.obj.get_family_handle_list():
-            family = find_family(fhandle)
+            family = find_family(self.db, fhandle)
             marr_date = family.get_marriage_date()
             marr_ok = marr_date > 0 if marr_date is not None else False
             return marr_ok and death_ok and death_date == marr_date
@@ -2278,7 +2378,7 @@ class BaptTooLate(PersonRule):
             # only check if the person has exactly one parent family
             return False
 
-        family = find_family(parents[0])
+        family = find_family(self.db, parents[0])
         if not family:
             # family not found?
             return False
@@ -2300,7 +2400,7 @@ class BaptTooLate(PersonRule):
         child_birth_bapt_distances = []
         for childref in children:
             if int(childref.get_mother_relation()) == ChildRefType.BIRTH:
-                child = find_person(childref.ref)
+                child = find_person(self.db, childref.ref)
                 if self.obj.get_gramps_id() == child.get_gramps_id():
                     continue
                 birth_date = child.get_birth_date()
@@ -2317,7 +2417,6 @@ class BaptTooLate(PersonRule):
 
         median_birth_bapt_distance = statistics.median(child_birth_bapt_distances)
 
-        # TODO: make this a parameter? "baptism distance grace period in days"
         if birth_bapt_distance > median_birth_bapt_distance + 120:
             return True
 
@@ -2343,7 +2442,6 @@ class BuryTooLate(PersonRule):
             return False
 
         death_bury_distance = bury_date - death_date
-        # TODO: make this a parameter? "Maximum number of days between death and burial"
         if death_bury_distance > 14:
             return True
 
@@ -2360,9 +2458,9 @@ class ChildrenOrderIncorrect(FamilyRule):
     ID = 38
     SEVERITY = Rule.ERROR
 
-    def __init__(self, obj, est):
+    def __init__(self, db, obj, est):
         """initialize the rule"""
-        FamilyRule.__init__(self, obj)
+        FamilyRule.__init__(self, db, obj)
         self.est = est
 
     def _get_params(self):
@@ -2378,7 +2476,7 @@ class ChildrenOrderIncorrect(FamilyRule):
         prev_birth_date = 0
         for childref in children:
             if int(childref.get_mother_relation()) == ChildRefType.BIRTH:
-                child = find_person(childref.ref)
+                child = find_person(self.db, childref.ref)
                 birth_date = child.get_birth_date(self.est)
                 birth_ok = birth_date > 0 if birth_date is not None else False
                 if birth_ok and birth_date < prev_birth_date:
@@ -2397,9 +2495,9 @@ class FamilyOrderIncorrect(PersonRule):
     ID = 39
     SEVERITY = Rule.WARNING
 
-    def __init__(self, obj, est):
+    def __init__(self, db, obj, est):
         """initialize the rule"""
-        PersonRule.__init__(self, obj)
+        PersonRule.__init__(self, db, obj)
         self.est = est
 
     def _get_params(self):
@@ -2414,7 +2512,7 @@ class FamilyOrderIncorrect(PersonRule):
 
         prev_compare_date = 0
         for fhandle in families:
-            family = find_family(fhandle)
+            family = find_family(self.db, fhandle)
             if not family:
                 # family not found?
                 continue
@@ -2435,7 +2533,7 @@ class FamilyOrderIncorrect(PersonRule):
                     # if there is no, check for the birth date of the oldest child
                     for childref in family.get_child_ref_list():
                         if int(childref.get_mother_relation()) == ChildRefType.BIRTH:
-                            child = find_person(childref.ref)
+                            child = find_person(self.db, childref.ref)
                             birth_date = child.get_birth_date(self.est)
                             birth_ok = (
                                 birth_date > 0 if birth_date is not None else False
